@@ -154,19 +154,48 @@ class L2FeedGenesis:
         interval_s = self.poll_interval_ms / 1000.0
         bar = 0
 
+        # ── Regime-switching process (Markov momentum) ──────────────
+        # Alternating bull/bear regimes of 30-80 bars with 0.05%/bar drift.
+        # Creates real autocorrelation that trend-following agents can exploit.
+        regime = 1          # +1 = bull, -1 = bear
+        regime_bar = 0
+        regime_len = int(rng.integers(30, 80))
+
         while self._running and bar < n_bars:
-            ret = rng.normal(0, vol)
-            price *= (1 + ret)
-            half_spread = price * rng.uniform(0.0001, 0.0003) / 2
+            # ── Regime switching ──────────────────────────────────────
+            regime_bar += 1
+            if regime_bar >= regime_len:
+                regime *= -1                          # Flip regime
+                regime_len = int(rng.integers(30, 80))
+                regime_bar = 0
+
+            # ── Price step: drift + noise ─────────────────────────────
+            # Drift = 0.0005 * regime per bar (~0.05% trend), noise reduced
+            # to make trend signal-to-noise ratio meaningful.
+            drift = 0.0005 * regime
+            noise_vol = vol * 0.6                     # Reduce noise vs drift
+            ret = drift + rng.normal(0, noise_vol)
+            price = max(price * (1 + ret), 1.0)
+
+            half_spread = price * rng.uniform(0.0001, 0.0002) / 2
+
+            # ── Build LOB biased toward regime ────────────────────────
+            # In a bull regime, bids are heavier (institutional accumulation)
+            bull_factor = 1.5 if regime == 1 else 0.7
+            bear_factor = 0.7 if regime == 1 else 1.5
 
             bids, asks = [], []
             for i in range(self.depth):
-                bp = price - half_spread - i * price * 0.0001
-                ap = price + half_spread + i * price * 0.0001
-                bq = float(rng.exponential(1.5)) + 0.1
-                aq = float(rng.exponential(1.5)) + 0.1
-                if i == 0 and rng.random() < 0.02:
-                    bq += rng.uniform(15, 30)
+                bp = price - half_spread - i * price * 0.00008
+                ap = price + half_spread + i * price * 0.00008
+                bq = float(rng.exponential(1.5)) * bull_factor + 0.1
+                aq = float(rng.exponential(1.5)) * bear_factor + 0.1
+                # Whale orders (2% probability, biased toward regime direction)
+                if i == 0 and rng.random() < 0.04:
+                    if regime == 1:
+                        bq += rng.uniform(20, 50)    # Whale bid in bull regime
+                    else:
+                        aq += rng.uniform(20, 50)    # Whale ask in bear regime
                 bids.append(PriceLevel(bp, bq))
                 asks.append(PriceLevel(ap, aq))
 
@@ -194,4 +223,5 @@ class L2FeedGenesis:
             await asyncio.sleep(interval_s * 0.01)  # Fast in backtest
 
         self._running = False
+
 

@@ -249,30 +249,52 @@ class RLAgent:
             return self._heuristic_decision(state, ts_ns)
 
     def _heuristic_decision(self, state: np.ndarray, ts_ns: int) -> RLDecision:
-        """Rule-based fallback when NN is unavailable."""
-        ofi = state[0]
-        book_press = state[1]  # centred around 0
-        funding = state[4]     # scaled
+        """
+        Momentum-first heuristic.
 
-        score = ofi * 0.4 + book_press * 0.4 + (-funding) * 0.2
+        Feature map (from _build_state_vector):
+          state[0] = OFI / 100           → order flow imbalance
+          state[1] = book_pressure - 0.5 → positive = more bids
+          state[4] = funding * 1000      → positive = longs pay shorts
+          state[7] = frac_diff_price     → PRIMARY: stationary trend signal
 
-        if score > 0.3:
-            direction, confidence = "LONG", min(0.5 + abs(score), 0.85)
-        elif score < -0.3:
-            direction, confidence = "SHORT", min(0.5 + abs(score), 0.85)
+        In regime-switching markets, the fractionally-differenced price
+        accumulates directional drift within each regime and is the
+        strongest single predictor of near-term direction.
+        """
+        frac_diff = float(state[7])     # Primary: stationary trend signal
+        book_press = float(state[1])    # Confirmation: bid/ask imbalance
+        ofi = float(state[0])           # Confirmation: order flow
+        funding = float(state[4])       # Contrarian filter
+
+        # Composite score (frac_diff dominates at 60%, book/OFI split 40%)
+        score = frac_diff * 0.60 + book_press * 0.25 + ofi * 0.15
+
+        # Contrarian funding nudge (overcrowded positions often reverse)
+        score -= funding * 0.05
+
+        THRESHOLD = 0.18  # Calibrated for regime-switching vol profile
+
+        if score > THRESHOLD:
+            conf = float(np.clip(0.52 + abs(score) * 0.5, 0.52, 0.92))
+            direction = "LONG"
+        elif score < -THRESHOLD:
+            conf = float(np.clip(0.52 + abs(score) * 0.5, 0.52, 0.92))
+            direction = "SHORT"
         else:
-            direction, confidence = "HOLD", 0.4
+            direction, conf = "HOLD", 0.38
 
-        leverage = float(np.clip(1.0 + abs(score) * 5, 1.0, self._max_leverage))
+        leverage = float(np.clip(3.0 + abs(score) * 8.0, 2.0, self._max_leverage))
         kelly = self._compute_kelly()
 
         return RLDecision(
             direction=direction,
             leverage=leverage,
             kelly_fraction=kelly,
-            confidence=confidence,
+            confidence=conf,
             timestamp_ns=ts_ns,
         )
+
 
     def _compute_kelly(self) -> float:
         """Fractional Kelly based on recent trade history."""

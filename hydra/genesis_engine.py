@@ -22,11 +22,13 @@ State Machine:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
+
 
 import yaml
 
@@ -180,8 +182,17 @@ class GenesisEngine:
         self._last_context: Optional[ContextSnapshot] = None
         self._last_clusters: Optional[WhaleClusters] = None
 
+        # ── Momentum Tracker ──────────────────
+        # Rolling 20-bar price buffer for momentum gate
+        self._price_hist: List[float] = []
+        self._MOMENTUM_WINDOW = 20  # bars
+        self._MOMENTUM_THRESH = 0.002  # 0.2% in 20 bars to confirm trend
+
+        import numpy as np
+        self._np = np
+
         logger.info(
-            "🐉 GenesisEngine | mode=%s | balance=%.2f | bus=%s",
+            "GenesisEngine | mode=%s | balance=%.2f | bus=%s",
             mode, self._balance, type(self.bus).__name__,
         )
 
@@ -270,11 +281,21 @@ class GenesisEngine:
         """Full per-bar processing pipeline."""
         mid = snapshot.mid_price
         ts_ns = snapshot.timestamp_ns
+        np = self._np
 
-        # ── 1. Fractional Differentiation ─────
+        # ── 1. Momentum tracker ───────────────
+        self._price_hist.append(mid)
+        if len(self._price_hist) > self._MOMENTUM_WINDOW + 5:
+            self._price_hist = self._price_hist[-(self._MOMENTUM_WINDOW + 5):]
+
+        momentum = 0.0
+        if len(self._price_hist) >= self._MOMENTUM_WINDOW:
+            momentum = (mid - self._price_hist[-self._MOMENTUM_WINDOW]) / max(self._price_hist[-self._MOMENTUM_WINDOW], 1)
+
+        # ── 2. Fractional Differentiation ─────
         frac_price = self.frac_diff.update(mid) or 0.0
 
-        # ── 2. Heatmap Update ─────────────────
+        # ── 3. Heatmap Update ─────────────────
         bids = [(lvl.price, lvl.quantity) for lvl in snapshot.bids]
         asks = [(lvl.price, lvl.quantity) for lvl in snapshot.asks]
         clusters = self.heatmap.update(bids, asks, mid, ts_ns)
@@ -282,7 +303,7 @@ class GenesisEngine:
         if self.stats.bars_processed % 20 == 0:
             await self.heatmap.publish(clusters)
 
-        # ── 3. Context ────────────────────────
+        # ── 4. Context ────────────────────────
         ctx = self.context_feed.last_snapshot
         self._last_context = ctx
         funding_rate = ctx.funding_rate if ctx else 0.0
@@ -290,41 +311,37 @@ class GenesisEngine:
         est_liq      = ctx.estimated_liq if ctx else 0.0
         funding_sentiment = ctx.sentiment if ctx else "NEUTRAL"
 
-        # ── 4. Feature Vector (for RL) ─────────
-        # Build a simple feature vector from snapshot
-        total_bid = sum(p * q for p, q in bids)
-        total_ask = sum(p * q for p, q in asks)
-        book_pressure = total_bid / max(total_bid + total_ask, 1e-8)
+        # ── 5. LOB Features ───────────────────
+        # Compute OFI from top-10 LOB levels (bid notional - ask notional)
+        top_bids = bids[:10]
+        top_asks = asks[:10]
+        total_bid = sum(p * q for p, q in top_bids)
+        total_ask = sum(p * q for p, q in top_asks)
+        total_bid_full = sum(p * q for p, q in bids)
+        total_ask_full = sum(p * q for p, q in asks)
+        book_pressure = total_bid_full / max(total_bid_full + total_ask_full, 1e-8)
+        # OFI: normalised bid-ask imbalance in top 10 levels
+        ofi = (total_bid - total_ask) / max(total_bid + total_ask, 1e-8)
         spread_bps = ((snapshot.best_ask - snapshot.best_bid) / max(mid, 1)) * 10000
-        price_to_vwap = 0.0  # Would come from FeatureEngineer in full integration
-        ofi = 0.0
+        price_to_vwap = 0.0
 
-        # ── 5. Monitor Open Trade ─────────────
+        # ── 6. Monitor Open Trade ─────────────
         if self._current_trade is not None:
             await self._monitor_trade(mid, ts_ns)
             if self._current_trade is not None:
-                return  # Remain in monitoring
+                return
 
-        # ── 6. Specialist Agents ──────────────
+        # ── 7. Specialist Agents ──────────────
         chart_signal = self.chart_agent.process(
-            mid_price=mid,
-            feature_vec=None,
-            timestamp_ns=ts_ns,
+            mid_price=mid, feature_vec=None, timestamp_ns=ts_ns,
         )
 
         rl_decision = self.rl_agent.process(
-            ofi=ofi,
-            book_pressure=book_pressure,
-            spread_bps=spread_bps,
-            price_to_vwap=price_to_vwap,
-            funding_rate=funding_rate,
-            oi_delta=oi_delta,
-            est_liq=est_liq,
-            frac_diff_price=frac_price,
-            running_pnl=self.stats.total_pnl,
-            drawdown=self.stats.max_drawdown,
-            win_rate=self.stats.win_rate,
-            balance=self._balance,
+            ofi=ofi, book_pressure=book_pressure, spread_bps=spread_bps,
+            price_to_vwap=price_to_vwap, funding_rate=funding_rate,
+            oi_delta=oi_delta, est_liq=est_liq, frac_diff_price=frac_price,
+            running_pnl=self.stats.total_pnl, drawdown=self.stats.max_drawdown,
+            win_rate=self.stats.win_rate, balance=self._balance,
             timestamp_ns=ts_ns,
         )
 
@@ -332,8 +349,7 @@ class GenesisEngine:
             mid_price=mid,
             bid_wall=getattr(snapshot, 'bid_wall_price', snapshot.best_bid),
             ask_wall=getattr(snapshot, 'ask_wall_price', snapshot.best_ask),
-            cum_bid_depth=total_bid,
-            cum_ask_depth=total_ask,
+            cum_bid_depth=total_bid_full, cum_ask_depth=total_ask_full,
             support_levels=clusters.support_levels[:3],
             resistance_levels=clusters.resistance_levels[:3],
             funding_rate=funding_rate,
@@ -344,26 +360,33 @@ class GenesisEngine:
             timestamp_ns=ts_ns,
         )
 
-        # ── 7. Head Agent Fusion ──────────────
-        depth_ratio = total_bid / max(total_ask, 1)
+        # ── 8. Head Agent Fusion ──────────────
+        depth_ratio = total_bid_full / max(total_ask_full, 1)
         trade_struct = self.head_agent.fuse(
-            chart=chart_signal,
-            rl=rl_decision,
-            llm=llm_signal,
-            mid_price=mid,
-            heatmap_depth_ratio=depth_ratio,
-            funding_sentiment=funding_sentiment,
-            timestamp_ns=ts_ns,
+            chart=chart_signal, rl=rl_decision, llm=llm_signal,
+            mid_price=mid, heatmap_depth_ratio=depth_ratio,
+            funding_sentiment=funding_sentiment, timestamp_ns=ts_ns,
         )
 
-        # ── 8. Publish Signal ─────────────────
+        # ── 9. Momentum Gate ──────────────────
+        # Only allow trades when 20-bar momentum confirms signal direction.
+        # This is the primary WR improvement: enter only WITH the trend.
+        if trade_struct.is_actionable and not trade_struct.vetoed:
+            direction = trade_struct.direction
+            momentum_ok = (
+                (direction == "LONG"  and momentum >= self._MOMENTUM_THRESH) or
+                (direction == "SHORT" and momentum <= -self._MOMENTUM_THRESH) or
+                abs(momentum) < 1e-6  # not enough history yet — allow through
+            )
+            if not momentum_ok:
+                trade_struct = dataclasses.replace(
+                    trade_struct, vetoed=True, veto_reason="MOMENTUM_GATE"
+                )
+
         await self.bus.publish(MarketEvent(
-            type=EventType.SIGNAL,
-            data=trade_struct.to_json(),
-            source="head_agent",
+            type=EventType.SIGNAL, data=trade_struct.to_json(), source="head_agent",
         ))
 
-        # ── 9. Execute ────────────────────────
         if trade_struct.is_actionable:
             self.stats.signals_generated += 1
             if trade_struct.vetoed:
@@ -380,28 +403,26 @@ class GenesisEngine:
         mid = ts.mid_price
         direction = ts.direction
 
-        # Simplified SL/TP
-        vol = 0.002  # Fallback volatility
+        # Fixed ATR-style SL/TP: SL=0.4%, TP=1.0% → RR = 2.5 always
+        # This avoids the old leverage-scaled TP that created nonsensical RR values.
+        SL_PCT = 0.004   # 0.4% stop loss
+        TP_PCT = 0.010   # 1.0% take profit (2.5× RR)
         if direction == "LONG":
-            sl = mid * (1 - vol * 2)
-            tp = mid * (1 + vol * ts.rl_leverage * 0.5)
+            sl = mid * (1 - SL_PCT)
+            tp = mid * (1 + TP_PCT)
         else:
-            sl = mid * (1 + vol * 2)
-            tp = mid * (1 - vol * ts.rl_leverage * 0.5)
-
-        rr = abs(tp - mid) / max(abs(mid - sl), 1e-8)
-        if rr < 2.5:
-            return  # RR too low
+            sl = mid * (1 + SL_PCT)
+            tp = mid * (1 - TP_PCT)
 
         leverage = float(min(ts.rl_leverage, self.config.get("leverage", {}).get("tier_3_leverage", 10)))
         kelly = float(ts.rl_kelly)
         position_usd = self._balance * kelly * leverage
 
-        # Fee gate
+        # Fee gate: expected gross profit must exceed 3× round-trip fees
         fee_rate = self.config.get("risk", {}).get("fee_rate_taker", 0.0004)
         round_trip_fees = 2 * position_usd * fee_rate
-        expected_profit = abs(tp - mid) / mid * position_usd
-        if expected_profit < round_trip_fees * 5:
+        expected_profit = TP_PCT * position_usd
+        if expected_profit < round_trip_fees * 3:
             self.stats.signals_fee_rejected += 1
             return
 

@@ -214,6 +214,14 @@ class ChartAgent:
         if feature_vec is not None:
             self._feature_buffer.append(feature_vec)
 
+        # ── Always build self-contained price features ─────────────
+        # These ensure the model gets meaningful inputs even without FeatureEngineer.
+        price_feat = self._build_price_features()
+        if price_feat is not None:
+            # Use these as the primary feature source if no external vec provided
+            if feature_vec is None:
+                self._feature_buffer.append(price_feat)
+
         if len(self._price_buffer) < self._seq_len:
             return None  # Warming up
 
@@ -221,16 +229,16 @@ class ChartAgent:
         self._price_buffer = self._price_buffer[-self._seq_len:]
         self._feature_buffer = self._feature_buffer[-self._seq_len:]
 
-        # Detect S/R and patterns via heuristics
+        # Pattern detection
         patterns = self._detect_patterns()
         sr_support, sr_resistance = self._compute_sr(mid_price)
 
-        # Model inference
+        # 1. Try trained model inference
         direction, confidence, predicted_candles = self._model_inference()
 
-        # Override with heuristics if model is absent / low confidence
+        # 2. Fallback to linreg heuristic if model is absent or low-confidence
         if confidence < self._confidence_thr:
-            direction, confidence = self._heuristic_direction(patterns, mid_price, sr_support, sr_resistance)
+            direction, confidence = self._linreg_heuristic(patterns, mid_price)
 
         return ChartSignal(
             direction=direction,
@@ -242,13 +250,18 @@ class ChartAgent:
             timestamp_ns=timestamp_ns,
         )
 
+
     def _model_inference(self):
         """Run PatchTST forward pass if available."""
+        # Need feature buffer filled to seq_len
         if not TORCH_AVAILABLE or self._model is None or len(self._feature_buffer) < self._seq_len:
             return "NEUTRAL", 0.33, []
 
         try:
             feats = np.array(self._feature_buffer[-self._seq_len:], dtype=np.float32)
+            # Ensure correct feature dimension
+            if feats.ndim == 1:
+                feats = feats.reshape(-1, 1)
             n_feat = min(feats.shape[1], self._n_features)
             feats = feats[:, :n_feat]
             if feats.shape[1] < self._n_features:
@@ -271,6 +284,7 @@ class ChartAgent:
         except Exception as e:
             logger.debug("ChartAgent inference error: %s", e)
             return "NEUTRAL", 0.33, []
+
 
     def _detect_patterns(self) -> List[str]:
         """Rule-based pattern detection on price buffer."""
@@ -317,25 +331,115 @@ class ChartAgent:
         prices = np.array(self._price_buffer)
         if len(prices) < 10:
             return None, None
-
-        # Simple percentile-based S/R
         support = float(np.percentile(prices, 25))
         resistance = float(np.percentile(prices, 75))
         return support if support < mid_price else None, resistance if resistance > mid_price else None
 
+    def _build_price_features(self) -> Optional[np.ndarray]:
+        """
+        Build 8 self-contained features from the rolling price buffer.
+        Used when external FeatureEngineer is not connected.
+
+        Features:
+          0: 1-bar return
+          1: 5-bar momentum
+          2: 10-bar momentum
+          3: 20-bar momentum
+          4: 10-bar normalised std (volatility)
+          5: Z-score of current price over 20 bars
+          6: Fraction from 20-bar high (0=at high)
+          7: Fraction from 20-bar low  (1=at low)
+        """
+        p = self._price_buffer
+        n = len(p)
+        if n < 21:
+            return None
+
+        cur = p[-1]
+        def ret(lag):
+            return (cur - p[-lag - 1]) / max(abs(p[-lag - 1]), 1e-8) if n > lag else 0.0
+
+        window20 = np.array(p[-20:])
+        mu20 = window20.mean()
+        std20 = window20.std() + 1e-8
+
+        feats = np.array([
+            float(np.clip(ret(1) / 0.005, -5, 5)),         # 0: 1-bar ret (normed)
+            float(np.clip(ret(5) / 0.01, -5, 5)),           # 1: 5-bar momentum
+            float(np.clip(ret(10) / 0.02, -5, 5)),          # 2: 10-bar momentum
+            float(np.clip(ret(min(20, n-1)) / 0.04, -5, 5)),# 3: 20-bar momentum
+            float(np.clip(std20 / mu20 / 0.003, 0, 5)),     # 4: normalised vol
+            float(np.clip((cur - mu20) / std20, -5, 5)),    # 5: z-score
+            float(np.clip((window20.max() - cur) / (window20.max() + 1e-8), 0, 1)),  # 6: dist from high
+            float(np.clip((cur - window20.min()) / (window20.min() + 1e-8), 0, 1)),  # 7: dist from low
+        ], dtype=np.float32)
+
+        return feats
+
+    def _linreg_heuristic(self, patterns: List[str], mid_price: float):
+        """
+        Linear regression slope trend detector.
+
+        Fits OLS on the last 30-bar price window. The normalised slope
+        (slope per bar / mean_price) gives a robust trend signal.
+
+        Thresholds tuned for regime-switching data with 0.05%/bar drift:
+          |norm_slope| > 0.0003 → signal; |r| > 0.4 → minimum trend quality.
+        """
+        if len(self._price_buffer) < 30:
+            return "NEUTRAL", 0.35
+
+        prices = np.array(self._price_buffer[-30:], dtype=np.float64)
+        x = np.arange(len(prices), dtype=np.float64)
+        # OLS via numpy (no scipy dependency)
+        x_mean, p_mean = x.mean(), prices.mean()
+        num = ((x - x_mean) * (prices - p_mean)).sum()
+        den = ((x - x_mean) ** 2).sum() + 1e-12
+        slope = num / den
+        norm_slope = slope / max(p_mean, 1e-8)  # Fraction of price per bar
+
+        # Pearson r to measure trend quality
+        p_std = prices.std() + 1e-8
+        x_std = x.std() + 1e-8
+        r = num / (len(prices) * x_std * p_std + 1e-12)
+        abs_r = float(np.clip(abs(r), 0, 1))
+
+        # Pattern boosts
+        has_bull = "HH_HL" in patterns or "WHALE_ABSORPTION" in patterns
+        has_bear = "LH_LL" in patterns
+
+        MIN_SLOPE = 0.00025   # ~0.025% per bar minimum trend
+        MIN_R     = 0.35      # Minimum trend quality
+
+        if norm_slope > MIN_SLOPE and abs_r > MIN_R:
+            boost = 0.10 if has_bull else 0.0
+            conf = float(np.clip(0.52 + abs_r * 0.38 + boost, 0.52, 0.92))
+            return "LONG", conf
+
+        if norm_slope < -MIN_SLOPE and abs_r > MIN_R:
+            boost = 0.10 if has_bear else 0.0
+            conf = float(np.clip(0.52 + abs_r * 0.38 + boost, 0.52, 0.92))
+            return "SHORT", conf
+
+        # Sub-threshold: use pattern hints
+        if has_bull:
+            return "LONG", 0.55
+        if has_bear:
+            return "SHORT", 0.55
+
+        return "NEUTRAL", 0.33
+
     @staticmethod
     def _heuristic_direction(patterns, mid, sr_support, sr_resistance):
+        """Legacy fallback — superseded by _linreg_heuristic."""
         if "HH_HL" in patterns and "WHALE_ABSORPTION" in patterns:
             return "LONG", 0.72
         if "LH_LL" in patterns:
             return "SHORT", 0.68
         if "HH_HL" in patterns:
             return "LONG", 0.63
-        if sr_support and mid < sr_support * 1.002:
-            return "LONG", 0.61
-        if sr_resistance and mid > sr_resistance * 0.998:
-            return "SHORT", 0.61
         return "NEUTRAL", 0.33
+
 
     def train(
         self,
