@@ -13,13 +13,23 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
+import asyncio
 import io
-import sys
+import logging
 import os
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path
+sys.path.insert(0, str(Path(__file__).parent))
+
 # Force UTF-8 output on Windows (cp1252 cannot encode emoji)
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+Path("backtest/results").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
