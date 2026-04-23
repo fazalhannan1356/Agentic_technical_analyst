@@ -1,0 +1,22 @@
+2026-04-24 02:28:54,818 | INFO | hydra.data_engineer.frac_diff | FractionalDifferentiator | d=0.400 | window=1458
+2026-04-24 02:28:54,869 | INFO | hydra.specialist_agents.chart_agent | ChartAgent: fresh PatchTST model created (untrained).
+2026-04-24 02:28:54,870 | INFO | hydra.specialist_agents.chart_agent | ChartAgent initialized | torch=True
+2026-04-24 02:28:54,872 | INFO | hydra.specialist_agents.rl_agent | RLAgent initialized | STATE_DIM=15 | torch=True
+2026-04-24 02:28:54,873 | INFO | hydra.specialist_agents.llm_agent | LLMAgent initialized | model=claude-sonnet-4-5 | mode=backtest | api_key=NOT SET
+2026-04-24 02:28:54,873 | INFO | hydra.head_agent.signal_fusion | HeadAgent | weights: chart=0.35 rl=0.40 llm=0.25 | min_score=0.25
+2026-04-24 02:28:54,875 | WARNING | hydra.genesis_engine | Risk modules not found — using simplified risk logic.
+2026-04-24 02:28:54,899 | INFO | hydra.data_engineer.market_bus | MarketDataBus: In-process mode (no Redis dependency).
+2026-04-24 02:33:46,342 | INFO | hydra.genesis_engine | ============================================================
+2026-04-24 02:33:46,348 | INFO | hydra.genesis_engine |   Bars processed:     10000
+2026-04-24 02:33:46,348 | INFO | hydra.genesis_engine |   Signals generated:  934
+2026-04-24 02:33:46,348 | INFO | hydra.genesis_engine |   Signals vetoed:     1850
+2026-04-24 02:33:46,349 | INFO | hydra.genesis_engine |   Fee rejections:     0
+2026-04-24 02:33:46,349 | INFO | hydra.genesis_engine |   Total trades:       568
+2026-04-24 02:33:46,349 | INFO | hydra.genesis_engine |   Win rate:           29.75%
+2026-04-24 02:33:46,349 | INFO | hydra.genesis_engine |   Profit Factor:      0.773
+2026-04-24 02:33:46,349 | INFO | hydra.genesis_engine |   Total PnL:          $-91.9016
+2026-04-24 02:33:46,350 | INFO | hydra.genesis_engine |   Max drawdown:       9.69%
+2026-04-24 02:33:46,350 | INFO | hydra.genesis_engine |   Final balance:      $908.10
+2026-04-24 02:33:46,350 | INFO | hydra.genesis_engine |   Head Agent veto %: 66.5%
+2026-04-24 02:33:46,350 | INFO | hydra.genesis_engine | ============================================================
+2026-04-24 02:33:48,698 | INFO | genesis | Backtest complete. PF target >1.8 | Sharpe target >1.0

@@ -1,0 +1,140 @@
+# ============================================================
+#  HYDRA GENESIS ENGINE — MASTER CONFIGURATION
+#  Multi-Agent Swarm: ChartAgent + RLAgent + LLMAgent + HeadAgent
+# ============================================================
+
+# ── Exchange & Symbol ────────────────────────────────────────
+exchange:
+  name: binance
+  symbol: "BTC/USDT:USDT"
+  market_type: future
+  use_testnet: true
+  api_key: ""
+  api_secret: ""
+
+# ── Data Feed ────────────────────────────────────────────────
+feed:
+  mode: rest                      # rest | websocket
+  poll_interval_ms: 500
+  order_book_depth: 100           # Full 100-level LOB
+  trade_history_window: 500
+
+# ── Market Data Bus (Redis) ──────────────────────────────────
+bus:
+  redis_enabled: false            # true requires: pip install redis[hiredis]
+  redis_host: localhost
+  redis_port: 6379
+
+# ── Fractional Differentiation ──────────────────────────────
+frac_diff:
+  d: 0.4                          # Differencing order (0.3–0.5 recommended)
+  threshold: 1.0e-5               # Weight truncation threshold
+
+# ── Liquidity Heatmap ────────────────────────────────────────
+heatmap:
+  tick_size: 10.0                 # Price bucket size (USD)
+  decay: 0.995                    # Exponential decay per bar
+  sigma_thresh: 2.5               # Whale cluster zone threshold (μ + N×σ)
+
+# ── Context Feed ─────────────────────────────────────────────
+context:
+  poll_interval_s: 30             # Live mode polling interval
+
+# ── Chart Agent (PatchTST) ───────────────────────────────────
+chart_agent:
+  seq_len: 64                     # Input sequence length in bars
+  patch_size: 8                   # Bars per patch
+  n_features: 8                   # Feature dimension
+  forecast_len: 5                 # Candle overlay prediction bars
+  d_model: 128
+  n_heads: 4
+  n_layers: 3
+  confidence_thr: 0.60            # Minimum confidence for non-NEUTRAL signal
+  model_path: null                # Set to .pt file for pretrained model
+
+# ── RL Agent (PPO) ───────────────────────────────────────────
+rl_agent:
+  state_dim: 15
+  hidden_dim: 256
+  model_path: null                # Set to .pt for pretrained PPO
+  max_leverage: 20.0              # Hard cap on leverage output
+  n_train_epochs: 10
+
+# ── LLM Agent (Claude) ───────────────────────────────────────
+llm:
+  model: "claude-sonnet-4-5"
+  api_key: ""                     # Or set ANTHROPIC_API_KEY env var
+  max_tokens: 256
+  min_interval_s: 60.0            # Minimum seconds between API calls
+  enabled_in_paper: true
+  enabled_in_backtest: false      # API calls disabled in backtest
+
+# ── Head Agent (Consensus Fusion) ────────────────────────────
+head_agent:
+  weight_chart: 0.35
+  weight_rl: 0.40
+  weight_llm: 0.25
+  min_consensus_score: 0.25       # Minimum |score| to approve trade
+
+# ── Feature Engineering ──────────────────────────────────────
+features:
+  zscore_window: 100
+  ofi_levels: 10
+  vwap_window: 200
+  void_gap_threshold: 1.5
+
+# ── Legacy LiT Model (Quant Researcher) ─────────────────────
+model:
+  sequence_length: 50
+  n_features: 22
+  d_model: 128
+  n_heads: 8
+  n_encoder_layers: 4
+  patch_size: 5
+  dropout: 0.1
+  n_classes: 3
+  confidence_threshold: 0.85      # Hard floor for LiT model selectivity
+
+# ── Whale Detection ──────────────────────────────────────────
+whale:
+  usd_threshold: 1_000_000
+  spoof_window_bars: 5
+  stack_persistence_bars: 10
+
+# ── Risk Management ──────────────────────────────────────────
+risk:
+  initial_balance: 1000.0
+  fee_rate_taker: 0.0004          # 0.04% Binance futures taker
+  fee_rate_maker: 0.0002
+  fee_multiplier_gate: 5.0
+  rr_ratio: 2.5                   # Minimum reward:risk ratio
+  sl_tick_buffer: 3
+  wall_sigma_multiplier: 2.0
+  kelly_fraction: 0.25
+
+leverage:
+  tier_1_max_balance: 1000.0
+  tier_1_leverage: 3
+  tier_2_max_balance: 5000.0
+  tier_2_leverage: 5
+  tier_3_leverage: 10
+
+# ── Backtest ─────────────────────────────────────────────────
+backtest:
+  mode: synthetic
+  n_synthetic_bars: 10000
+  synthetic_start_price: 65000.0
+  synthetic_volatility: 0.002
+  output_dir: backtest/results/
+
+# ── Walk-Forward Validation ──────────────────────────────────
+validation:
+  total_bars: 10000
+  n_folds: 5
+  target_profit_factor: 1.8
+  target_sharpe: 1.0
+
+# ── Dashboard ────────────────────────────────────────────────
+dashboard:
+  refresh_rate_hz: 2
+  heatmap_levels: 20
