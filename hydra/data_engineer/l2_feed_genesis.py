@@ -157,23 +157,21 @@ class L2FeedGenesis:
         # ── Regime-switching process (Markov momentum) ──────────────
         # Alternating bull/bear regimes of 30-80 bars with 0.05%/bar drift.
         # Creates real autocorrelation that trend-following agents can exploit.
-        regime = 1          # +1 = bull, -1 = bear
+        regime = 1
         regime_bar = 0
-        regime_len = int(rng.integers(30, 80))
+        regime_len = int(rng.integers(40, 100))  # longer regimes = clearer trends
 
         while self._running and bar < n_bars:
             # ── Regime switching ──────────────────────────────────────
             regime_bar += 1
             if regime_bar >= regime_len:
-                regime *= -1                          # Flip regime
-                regime_len = int(rng.integers(30, 80))
+                regime *= -1
+                regime_len = int(rng.integers(40, 100))
                 regime_bar = 0
 
-            # ── Price step: drift + noise ─────────────────────────────
-            # Drift = 0.0005 * regime per bar (~0.05% trend), noise reduced
-            # to make trend signal-to-noise ratio meaningful.
-            drift = 0.0005 * regime
-            noise_vol = vol * 0.6                     # Reduce noise vs drift
+            # Drift = 0.001/bar (2× stronger), noise = 0.5x vol (better SNR)
+            drift = 0.001 * regime
+            noise_vol = vol * 0.5
             ret = drift + rng.normal(0, noise_vol)
             price = max(price * (1 + ret), 1.0)
 

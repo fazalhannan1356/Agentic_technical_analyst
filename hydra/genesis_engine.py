@@ -186,7 +186,7 @@ class GenesisEngine:
         # Rolling 20-bar price buffer for momentum gate
         self._price_hist: List[float] = []
         self._MOMENTUM_WINDOW = 20  # bars
-        self._MOMENTUM_THRESH = 0.002  # 0.2% in 20 bars to confirm trend
+        self._MOMENTUM_THRESH = 0.001  # 0.1% in 20 bars (more sensitive)
 
         import numpy as np
         self._np = np

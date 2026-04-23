@@ -273,7 +273,7 @@ class RLAgent:
         # Contrarian funding nudge (overcrowded positions often reverse)
         score -= funding * 0.05
 
-        THRESHOLD = 0.18  # Calibrated for regime-switching vol profile
+        THRESHOLD = 0.12  # More sensitive to frac_diff momentum signal
 
         if score > THRESHOLD:
             conf = float(np.clip(0.52 + abs(score) * 0.5, 0.52, 0.92))

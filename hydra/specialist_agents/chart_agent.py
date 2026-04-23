@@ -408,17 +408,17 @@ class ChartAgent:
         has_bull = "HH_HL" in patterns or "WHALE_ABSORPTION" in patterns
         has_bear = "LH_LL" in patterns
 
-        MIN_SLOPE = 0.00025   # ~0.025% per bar minimum trend
-        MIN_R     = 0.35      # Minimum trend quality
+        MIN_SLOPE = 0.00015   # ~0.015% per bar (2× more sensitive)
+        MIN_R     = 0.28      # Lower bar for trend quality
 
         if norm_slope > MIN_SLOPE and abs_r > MIN_R:
             boost = 0.10 if has_bull else 0.0
-            conf = float(np.clip(0.52 + abs_r * 0.38 + boost, 0.52, 0.92))
+            conf = float(np.clip(0.54 + abs_r * 0.36 + boost, 0.54, 0.92))
             return "LONG", conf
 
         if norm_slope < -MIN_SLOPE and abs_r > MIN_R:
             boost = 0.10 if has_bear else 0.0
-            conf = float(np.clip(0.52 + abs_r * 0.38 + boost, 0.52, 0.92))
+            conf = float(np.clip(0.54 + abs_r * 0.36 + boost, 0.54, 0.92))
             return "SHORT", conf
 
         # Sub-threshold: use pattern hints
